@@ -1,14 +1,11 @@
 #include <SPI.h>
-#include <LoRa.h> 
+#include <LoRa.h>
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
 #include <MPU6050.h>
 #include <TinyGPS++.h>
 #include <HardwareSerial.h>
-#include <AES.h>
-#include <ChaCha.h>
-#include <CRC32.h>
 
 #define LORA_SS 5
 #define LORA_RST 14
@@ -23,14 +20,10 @@ TinyGPSPlus gps;
 HardwareSerial gpsSerial(2);
 
 float filterAx = 0, filterAy = 0, filterAz = 0;
-const float alpha = 0.1; // Smoothing factor for acceleration
+const float alpha = 0.1;  // Smoothing factor for acceleration
 
-AES128 aes;
-ChaCha chacha;
-CRC32 crc;
-
-uint8_t key[16] = {0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6, 0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C}; // AES key
-uint8_t nonce[8] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07}; // ChaCha nonce
+uint8_t key[16] = "CanSatKey123456";  // 16-byte XOR key
+uint32_t packetCounter = 0;  // Dynamic counter for XOR
 
 void setup() {
     Serial.begin(115200);
@@ -48,7 +41,6 @@ void setup() {
     LoRa.setCodingRate4(6);
     LoRa.setTxPower(17, PA_OUTPUT_PA_BOOST_PIN);
     LoRa.enableCrc();
-    
     Serial.println("[OK] LoRa initialized with 1 km optimized settings.");
     
     if (!bme.begin(0x76)) {
@@ -64,10 +56,6 @@ void setup() {
         while (1);
     }
     Serial.println("[OK] MPU6050 initialized");
-    
-    aes.setKey(key, 16);
-    chacha.setKey(key, 16);
-    chacha.setIV(nonce, 8);
     
     Serial.println("CanSat Transmitter Ready!");
 }
@@ -97,37 +85,47 @@ void loop() {
     updateGPS(latitude, longitude);
     
     String dataPacket = String(temperature) + "," + String(pressure) + "," + String(altitude) + "," +
-                        String(humidity) + "," + String(filterAx) + "," + String(filterAy) + "," + String(filterAz) + "," +
-                        String(airQualityPPM) + "(" + airQualityStatus + ")," + String(latitude, 6) + "," + String(longitude, 6) + "#";
+                       String(humidity) + "," + String(filterAx) + "," + String(filterAy) + "," + String(filterAz) + "," +
+                       String(airQualityPPM) + "(" + airQualityStatus + ")," + String(latitude, 6) + "," + String(longitude, 6);
     
-    // XOR Obfuscation
-    String obfuscatedData = xorObfuscate(dataPacket, 0xAA); // 0xAA is the XOR key
+    // Step 1: XOR Encryption with dynamic key
+    String encryptedData = applyXOR(dataPacket, packetCounter);
     
-    // AES Encryption
-    uint8_t encryptedData[128];
-    aes.encryptBlock(encryptedData, (uint8_t*)obfuscatedData.c_str());
+    // Step 2: CRC32 for integrity
+    uint8_t dataBytes[encryptedData.length() + 1];
+    encryptedData.getBytes(dataBytes, encryptedData.length() + 1);
+    uint32_t crc = calculateCRC32(dataBytes, encryptedData.length());
     
-    // CRC32 for integrity
-    crc.reset();
-    crc.update(encryptedData, sizeof(encryptedData));
-    uint32_t checksum = crc.finalize();
-    
-    // Send data
+    // Send encrypted data + CRC32
     LoRa.beginPacket();
-    LoRa.write(encryptedData, sizeof(encryptedData));
-    LoRa.write((uint8_t*)&checksum, sizeof(checksum));
+    LoRa.print(encryptedData);
+    LoRa.write((uint8_t*)&crc, sizeof(crc));  // Append 4-byte CRC32
     LoRa.endPacket();
     
-    Serial.println("Sending encrypted data...");
-    delay(1000);  // Send data every 1 second
+    Serial.println("Sending encrypted packet (len=" + String(encryptedData.length()) + ") with CRC32: " + String(crc, HEX));
+    packetCounter++;
+    
+    delay(1000);  // Send every 1 second
 }
 
-String xorObfuscate(String data, uint8_t key) {
+String applyXOR(String data, uint32_t counter) {
     String result = data;
-    for (int i = 0; i < data.length(); i++) {
-        result[i] = data[i] ^ key;
+    for (int i = 0; i < result.length(); i++) {
+        uint8_t keyByte = key[i % 16] ^ (counter & 0xFF);  // Dynamic key per packet
+        result[i] = result[i] ^ keyByte;
     }
     return result;
+}
+
+uint32_t calculateCRC32(const uint8_t *data, size_t length) {
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < length; i++) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; j++) {
+            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+        }
+    }
+    return ~crc;
 }
 
 void updateGPS(float &lat, float &lng) {
