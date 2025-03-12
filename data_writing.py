@@ -1,12 +1,15 @@
 import serial
 import csv
 import time
+import os
+import shutil
 from datetime import datetime
 
 # Serial port configuration
 SERIAL_PORT = 'COM7'  # Update as needed (e.g., '/dev/ttyUSB0' for Linux)
 BAUD_RATE = 115200
 CSV_FILE = 'cansat_data.csv'
+HISTORIC_DIR = 'Historic Data'
 
 # CSV Header
 HEADER = [
@@ -23,7 +26,16 @@ except Exception as e:
     print(f"[Error] Failed to connect: {e}")
     exit()
 
-# Create CSV file with header if it doesn’t exist
+# Handle CSV file: Move existing file to Historic Data if it exists
+if os.path.exists(CSV_FILE):
+    if not os.path.exists(HISTORIC_DIR):
+        os.makedirs(HISTORIC_DIR)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    historic_file = os.path.join(HISTORIC_DIR, f'cansat_data_{timestamp}.csv')
+    shutil.move(CSV_FILE, historic_file)
+    print(f"[OK] Moved existing '{CSV_FILE}' to '{historic_file}'.")
+
+# Create new CSV file with header
 try:
     with open(CSV_FILE, mode='w', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
@@ -43,7 +55,7 @@ velocity_z = 0.0
 def update_velocity(acc, last_velocity, delta_time):
     return round(last_velocity + acc * delta_time, 2)
 
-def parse_data(data):
+def parse_data(data, encrypted_data):
     global last_altitude, last_time, velocity_x, velocity_y, velocity_z
     try:
         # Remove the "🔹 Decrypted Data: " prefix and strip whitespace
@@ -76,18 +88,19 @@ def parse_data(data):
                 timestamp, temperature, pressure, altitude, humidity,
                 acc_x, acc_y, acc_z, velocity_x, velocity_y, velocity_z,
                 air_quality, latitude, longitude
-            ]
+            ], encrypted_data  # Return encrypted data too
         else:
             print(f"[Warning] Invalid format: {data}")
-            return None
+            return None, encrypted_data
     except Exception as e:
         print(f"[Error] Parsing failed: {e}")
-        return None
+        return None, encrypted_data
 
 # Main loop
 print("[OK] Listening for CanSat data...")
 try:
     buffer = ""  # Buffer to handle multiline input
+    encrypted_buffer = ""  # Buffer to store encrypted data temporarily
     while True:
         if ser.in_waiting > 0:
             line = ser.readline().decode('utf-8', errors='ignore').strip()
@@ -95,13 +108,16 @@ try:
             
             # Check for the decrypted data line
             if "🔹 Decrypted Data: " in line:
-                print("\n📡 Packet Received!")  # Mimic receiver output
+                print("\n📡 Packet Received!")
                 data = line
-                parsed_data = parse_data(data)
+                # Extract encrypted data from previous transmission (stored in receiver output)
+                encrypted_data = encrypted_buffer if encrypted_buffer else "N/A (First packet or missing)"
+                parsed_data, encrypted_data_out = parse_data(data, encrypted_data)
                 if parsed_data:
                     with open(CSV_FILE, mode='a', newline='') as file:
                         writer = csv.writer(file)
                         writer.writerow(parsed_data)
+                    print(f"🔹 Encrypted Data: {encrypted_data_out}")
                     print(f"🔹 Decrypted Data: {','.join(map(str, parsed_data[1:]))}")
                     print(f"🔹 Timestamp: {parsed_data[0]}")
                 
@@ -115,6 +131,11 @@ try:
                     elif "🔹 Packet Counter: " in buf_line:
                         print(buf_line)
                 buffer = ""  # Clear buffer after processing a packet
+                encrypted_buffer = ""  # Clear encrypted buffer
+            
+            # Capture encrypted data line from transmitter output
+            elif "Sending encrypted packet" in line:
+                encrypted_buffer = line.split("Sending encrypted packet")[1].strip()
             
             elif "⚠️ CRC32 Mismatch" in line or "🔒 CRC32 Valid" in line:
                 print(line)
