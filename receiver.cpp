@@ -6,7 +6,6 @@
 #define LORA_DIO0 2
 
 uint8_t key[16] = "CanSatKey123456";  // Must match transmitter
-uint32_t packetCounter = 0;
 
 void setup() {
     Serial.begin(115200);
@@ -34,19 +33,27 @@ void loop() {
     if (packetSize) {
         Serial.println("\n📡 Packet Received!");
         
+        // Step 1: Read packetCounter (first 4 bytes)
+        uint8_t counterBytes[4];
+        for (int i = 0; i < 4; i++) {
+            counterBytes[i] = LoRa.read();
+        }
+        uint32_t receivedCounter = *(uint32_t*)counterBytes;
+        
+        // Step 2: Read encrypted data
         String encryptedData = "";
-        while (LoRa.available() && encryptedData.length() < packetSize - 4) {
+        while (LoRa.available() && encryptedData.length() < packetSize - 8) {  // Adjust for 4-byte counter + 4-byte CRC
             encryptedData += (char)LoRa.read();
         }
         
-        // Read CRC32 (last 4 bytes)
+        // Step 3: Read CRC32 (last 4 bytes)
         uint8_t crcBytes[4];
         for (int i = 0; i < 4; i++) {
             crcBytes[i] = LoRa.read();
         }
         uint32_t receivedCRC = *(uint32_t*)crcBytes;
         
-        // Verify CRC32
+        // Step 4: Verify CRC32 (only over encrypted data)
         uint8_t dataBytes[encryptedData.length() + 1];
         encryptedData.getBytes(dataBytes, encryptedData.length() + 1);
         uint32_t calculatedCRC = calculateCRC32(dataBytes, encryptedData.length());
@@ -54,13 +61,13 @@ void loop() {
         if (receivedCRC == calculatedCRC) {
             Serial.println("🔒 CRC32 Valid: " + String(receivedCRC, HEX));
             
-            // Decrypt with XOR
-            String decryptedData = applyXOR(encryptedData, packetCounter);
+            // Step 5: Decrypt using received packetCounter
+            String decryptedData = applyXOR(encryptedData, receivedCounter);
             
             Serial.println("🔹 Decrypted Data: " + decryptedData);
+            Serial.println("🔹 Packet Counter: " + String(receivedCounter));
             Serial.println("🔹 RSSI: " + String(LoRa.packetRssi()));
             Serial.println("🔹 SNR: " + String(LoRa.packetSnr()));
-            packetCounter++;
         } else {
             Serial.println("⚠️ CRC32 Mismatch! Received: " + String(receivedCRC, HEX) + ", Calculated: " + String(calculatedCRC, HEX));
         }

@@ -91,18 +91,19 @@ void loop() {
     // Step 1: XOR Encryption with dynamic key
     String encryptedData = applyXOR(dataPacket, packetCounter);
     
-    // Step 2: CRC32 for integrity
+    // Step 2: CRC32 for integrity (only over encrypted data)
     uint8_t dataBytes[encryptedData.length() + 1];
     encryptedData.getBytes(dataBytes, encryptedData.length() + 1);
     uint32_t crc = calculateCRC32(dataBytes, encryptedData.length());
     
-    // Send encrypted data + CRC32
+    // Step 3: Send packetCounter + encrypted data + CRC32
     LoRa.beginPacket();
-    LoRa.print(encryptedData);
-    LoRa.write((uint8_t*)&crc, sizeof(crc));  // Append 4-byte CRC32
+    LoRa.write((uint8_t*)&packetCounter, sizeof(packetCounter));  // 4-byte packetCounter
+    LoRa.print(encryptedData);                                    // Encrypted data
+    LoRa.write((uint8_t*)&crc, sizeof(crc));                      // 4-byte CRC32
     LoRa.endPacket();
     
-    Serial.println("Sending encrypted packet (len=" + String(encryptedData.length()) + ") with CRC32: " + String(crc, HEX));
+    Serial.println("Sending encrypted packet (len=" + String(encryptedData.length()) + ") with Counter: " + String(packetCounter) + ", CRC32: " + String(crc, HEX));
     packetCounter++;
     
     delay(1000);  // Send every 1 second
